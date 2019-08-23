@@ -1,6 +1,11 @@
-# tampermonkey-scripts
+:toc:
+:toc-placement!:
 
-## What is Tampermonkey?
+= tampermonkey-scripts
+
+toc::[]
+
+== What is Tampermonkey?
 
 [quote, 'http://www.tampermonkey.net/?locale=en[tampermonkey]', 2019]
 ____
@@ -9,9 +14,10 @@ Tampermonkey is the most popular userscript manager, with over 10 million users.
 Tampermonkey makes it very easy to manage your userscripts and provides features like a clear overview over the running scripts, a built-in editor, ZIP-based import and export, automatic update checks and browser and cloud storage based synchronization. 
 ____
 
+
 http://www.tampermonkey.net/?locale=en[Click here to install Tampermonkey]
 
-## Amazon - Show sellers next to offers
+== Amazon - Show sellers next to offers
 
 Displays information about the seller in the search list and more places
 
