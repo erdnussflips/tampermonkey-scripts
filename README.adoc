@@ -21,4 +21,6 @@ http://www.tampermonkey.net/?locale=en[Click here to install Tampermonkey]
 
 Displays information about the seller in the search list and more places
 
+image::screenshots/amazon.show-sellers-next-to-offers.png[Screenshot for Amazon - Show sellers next to offers]
+
 https://raw.githubusercontent.com/erdnussflips/tampermonkey-scripts/master/amazon.show-sellers-next-to-offers.user.js[Click here to install the script]

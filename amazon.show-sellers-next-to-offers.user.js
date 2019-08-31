@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Amazon - Show sellers next to offers
-// @version      0.2
+// @version      0.3
 // @description  Displays information about the seller in the search list and more places
 // @author       erdnussflips
 // @icon         https://www.amazon.com/favicon.ico
@@ -211,7 +211,7 @@
 
         // Handle amazon ddos protection
         if (fetchResult.status === 503 || FEATURE_ALWAYS_USE_ARCHIVE) {
-            console.warn("amazon ddos protection occurred")
+            console.warn("Amazon ddos protection occurred")
             let archivedUrl = await promiseForArchivedUrl
             if (archivedUrl) {
                 return fetch(archivedUrl)
@@ -232,7 +232,7 @@
             return offer
         })
         .filter(item => {
-            if (!item.asin) console.warn("asin not set", item.node)
+            if (!item.asin) console.warn("Offer Asin not set", item.node)
             return item.asin
         })
         return offers
@@ -359,6 +359,7 @@
     }
 
     function injectSellersInformation(presentingContainer, sellersInformation) {
+        console.debug("Inject sellers information:", sellersInformation, " in presenting container:", presentingContainer)
         sellersInformation.forEach(function(sellerInformation) {
             // console.log(sellerInformation)
             Bliss.contents(presentingContainer, {
@@ -382,7 +383,10 @@
         let sellers = await collectSellersForOffer(offerId)
         console.debug("Seller IDs for offer:", offerId, sellers)
 
-        if (!sellers) return null
+        if (!sellers) {
+            console.warn("No sellers for:", offerId, sellers)
+            return null
+        }
 
         let sellersInformation = await Promise.all(sellers.map(function(seller){
             if (seller.sellerIsAmazon) {
@@ -415,7 +419,10 @@
             console.debug("Offer:", offer)
             let sellersInformation = await loadAllSellerInformationForOffer(offer.asin)
 
-            if (!sellersInformation) return
+            if (!sellersInformation) {
+                console.warn("No sellers information for:", offer.asin, offer)
+                return
+            }
 
             let presentingContainer = Bliss.$(".a-price:first-of-type", offer.node)[0].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode
             injectSellersInformation(presentingContainer, sellersInformation)
@@ -437,7 +444,7 @@
 
         let sellers = await collectSellersForOffer(offerAsin)
             let sellersInformation = await loadAllSellerInformationForOffer(offerAsin)
-            let presentingContainer = Bliss.$("#olp_feature_div", window.document)[0]
+            let presentingContainer = Bliss.$("#olp_feature_div", window.document)[0] || Bliss.$("#olpPocs_feature_div", window.document)[0]
             injectSellersInformation(presentingContainer, sellersInformation)
     }
 
