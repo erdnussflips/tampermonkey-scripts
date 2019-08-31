@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Amazon - Show sellers next to offers
-// @version      0.1
+// @version      0.2
 // @description  Displays information about the seller in the search list and more places
 // @author       erdnussflips
 // @icon         https://www.amazon.com/favicon.ico
@@ -26,9 +26,17 @@
 (async function() {
     'use strict';
 
+    // Features
+    const FEATURE_ALWAYS_USE_ARCHIVE = false
+    const FEATURE_SHOW_SELLERS_IN_SEARCH = false
+    const FEATURE_SHOW_SELLERS_IN_OFFER = true
+
+    // Constants
     const AMAZON_BASE_URL = window.location.origin;
     const AMAZON_NORMALIZED_BASE_URL = AMAZON_BASE_URL.replace(/^https?:\/\/(?:www|smile)\.amazon\.(.*)$/gm, "https://www.amazon.$1")
+    const ARCHIVE_OUTDATED_DAYS = 7
 
+    // Functions
     String.prototype.isEmpty = function() {
         return (this.length === 0 || !this.trim());
     };
@@ -101,19 +109,22 @@
                     responseXML: attributes.responseXML,
                     status: attributes.status,
                     statusText: attributes.statusText,
-                    headers: attributes.responseHeaders.split("\n")
-                    /*
-                    .map(item => {
-                        let header = item.split(":")
-                    }).reduce((map, header) => {
-                        console.log(header)
-                        if (header.length < 2) return map
-
-                        map[header[0].trim()] = header[1].trim()
-                        return map
-                    }, {}),
-                    */
+                    headers: [],
                 }
+
+                callbackContext.headers = attributes.responseHeaders
+                    .split("\n").filter(item => item.length > 0)
+                    .reduce((map, item) => {
+                    let matches = item.match(/(.*?):(.*)/)
+
+                    if (matches.length < 2) { return map }
+
+                    let headerKey = matches[1].trim().toLowerCase()
+                    let headerValue = matches[2].trim()
+                    map[headerKey] = headerValue
+
+                    return map
+                }, {})
 
                 if (attributes.status >= 200 && attributes.status < 300) {
                     resolve(callbackContext)
@@ -121,9 +132,14 @@
                     reject(callbackContext)
                 }
             }
-            GM_xmlhttpRequest_context.onerror = (error) => {
+
+            let errorFunction = (error) => {
                 reject(error)
             }
+            GM_xmlhttpRequest_context.onabort = errorFunction
+            GM_xmlhttpRequest_context.ontimeout = errorFunction
+            GM_xmlhttpRequest_context.onerror = errorFunction
+
             let gm_xhr = new GM_xmlhttpRequest(GM_xmlhttpRequest_context)
             return gm_xhr
         });
@@ -135,17 +151,16 @@
 
         let promise = fetch(WEB_ARCHIVE_SAVE_URL)
         promise.then(result => {
-            // let contentLocation = result.headers["content-location"]
-            let contentLocation = ""
-            console.log("Archived:", url, "Archive:", "https://web.archive.org" + contentLocation)
+            let contentLocation = result.headers["content-location"]
+            console.debug("Archived:", url, "Archive:", "https://web.archive.org" + contentLocation)
         })
         promise.catch(error => {
-            console.log("Failed to archive:", url, error)
+            console.warn("Failed to archive:", url, error)
         })
         return promise
     }
 
-    async function fetchArchivedUrl(url) {
+    async function loadWebarchivedUrl(url) {
         const WEB_ARCHIVE_AVAILABLE_BASE_URL = "https://archive.org/wayback/available?url="
         const WEB_ARCHIVE_AVAILABLE_URL = WEB_ARCHIVE_AVAILABLE_BASE_URL + url
 
@@ -160,18 +175,19 @@
                 let now = moment(new Date())
                 let lastArchived = moment.utc(snapshot_timestamp, "YYYYMMDDHHmmss", true)
                 let timeDifference = moment.duration(now.diff(lastArchived))
-                let archiveOutdated = timeDifference.asDays() > 7
+                let archiveOutdated = timeDifference.asDays() > ARCHIVE_OUTDATED_DAYS
 
                 if (!archiveOutdated) {
-                    console.log("Archive up-to-date")
+                    console.debug("Archive up-to-date for:", url)
                     return
                 }
             }
 
-            console.log("Refresh archive of:", url)
+            console.debug("Refresh archive for:", url)
             archiveUrl(url)
         })
         promise.catch(error => {
+            console.warn("Could not retrieve archive information => refresh archive for:", url, "error:", error)
             archiveUrl(url)
         })
 
@@ -188,13 +204,14 @@
     }
 
     async function fetchArchivableUrl(url) {
-        let promiseForArchivedUrl = fetchArchivedUrl(url)
+        let promiseForArchivedUrl = loadWebarchivedUrl(url)
 
-        let promise = Bliss.fetch(url)
+        let promise = fetch(url)
         let fetchResult = await promise
 
         // Handle amazon ddos protection
-        if (fetchResult.status === 503) {
+        if (fetchResult.status === 503 || FEATURE_ALWAYS_USE_ARCHIVE) {
+            console.warn("amazon ddos protection occurred")
             let archivedUrl = await promiseForArchivedUrl
             if (archivedUrl) {
                 return fetch(archivedUrl)
@@ -214,11 +231,15 @@
 
             return offer
         })
+        .filter(item => {
+            if (!item.asin) console.warn("asin not set", item.node)
+            return item.asin
+        })
         return offers
     }
 
     function collectSellersForOffer(offerId) {
-        return Bliss.fetch(AMAZON_BASE_URL + "/gp/offer-listing/" + offerId)
+        return fetch(AMAZON_BASE_URL + "/gp/offer-listing/" + offerId)
         .then(function(request){
             let document = HTMLParser(request.response)
             let sellers = Bliss.$(".olpSellerName", document).map(function(item){
@@ -252,12 +273,13 @@
             return sellers
         })
         .catch(function(error){
-            console.log(error)
+            console.warn(error)
         });
     }
 
     function collectSellerInformation(sellerId) {
-        let sellerUrlString = AMAZON_BASE_URL + "/sp?seller=" + sellerId
+        // let sellerUrlString = AMAZON_BASE_URL + "/sp?seller=" + sellerId
+        let sellerUrlString = AMAZON_NORMALIZED_BASE_URL + "/sp?seller=" + sellerId
         return fetchArchivableUrl(sellerUrlString)
         .then(function(request){
             let document = HTMLParser(request.response)
@@ -274,7 +296,7 @@
 
             try {
                 let sellerName = Bliss.$("#sellerName", document)[0].innerText
-                let sellerLogHint = sellerId + " ("+sellerName+")"
+                let sellerLogHint = sellerId + " ("+sellerName+") [" + sellerUrlString + "]"
                 sellerInformation.sellerName = sellerName
 
                 try {
@@ -293,30 +315,30 @@
                         sellerInformation.sellerBusinessAddress = sellerBusinessAddress
                     }
                     catch (error) {
-                        console.log("Could not collect seller address for: " + sellerLogHint, error)
+                        console.warn("Could not collect seller address for:", sellerLogHint, error)
 
                         try {
                             let sellerAbout = Bliss.$("#about-seller", document)[0]
                             sellerInformation.sellerAbout = sellerAbout
                         }
                         catch(error) {
-                            console.log("Could not collect seller sellerAbout for: " + sellerLogHint, error)
+                            console.warn("Could not collect seller sellerAbout for:", sellerLogHint, error)
                         }
                     }
                 }
                 catch (error) {
-                    console.log("Could not collect seller business information for: " + sellerLogHint, error)
+                    console.warn("Could not collect seller business information for:", sellerLogHint, error)
                 }
 
                 return sellerInformation
             }
             catch(error) {
-                console.log("Could not collect seller information for: " + sellerId, error)
+                console.warn("Could not collect seller information for:", sellerId, error)
             }
 
         })
         .catch(function(error){
-            console.log("Request failed for: " + sellerId, error)
+            console.warn("Request failed for: " + sellerId, error)
         });
     }
 
@@ -329,10 +351,10 @@
             data: "vatId=" + vatId
         })
         .then(response => {
-            console.log(response)
+            console.warn(response)
         })
         .catch(function(error){
-            console.log(error)
+            console.warn(error)
         })
     }
 
@@ -357,10 +379,10 @@
     }
 
     async function loadAllSellerInformationForOffer(offerId) {
-        // console.log("Offer:", offer)
-
         let sellers = await collectSellersForOffer(offerId)
-        // console.log("Seller IDs for offer: " + offer.asin, sellers)
+        console.debug("Seller IDs for offer:", offerId, sellers)
+
+        if (!sellers) return null
 
         let sellersInformation = await Promise.all(sellers.map(function(seller){
             if (seller.sellerIsAmazon) {
@@ -381,19 +403,31 @@
     }
 
     function extendSearchResults() {
-        if (window.location.pathname !== "/s") {
+        if (!FEATURE_SHOW_SELLERS_IN_SEARCH) {
+            console.info("Disabled sellers in search")
             return
         }
 
+        if (window.location.pathname !== "/s") return
+
         let offers = collectOffers()
         offers.forEach(async function(offer){
+            console.debug("Offer:", offer)
             let sellersInformation = await loadAllSellerInformationForOffer(offer.asin)
+
+            if (!sellersInformation) return
+
             let presentingContainer = Bliss.$(".a-price:first-of-type", offer.node)[0].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode
             injectSellersInformation(presentingContainer, sellersInformation)
         })
     }
 
     async function extendOfferPage() {
+        if (!FEATURE_SHOW_SELLERS_IN_OFFER) {
+            console.info("Disabled sellers in offer")
+            return
+        }
+
         let matches = window.location.pathname.match(/(?:(?:\/[^\/]+)?\/dp\/([^\/?#]+))|(?:\/gp\/product\/([^\/?#]+))/)
         if (!matches || matches.length == 0) {
             return
@@ -407,7 +441,7 @@
             injectSellersInformation(presentingContainer, sellersInformation)
     }
 
-    console.log("Hello from 'Amazon show sellers in search'")
+    console.info("Hello from '"+ GM_info.script.name +"'")
 
     extendSearchResults()
     extendOfferPage()
