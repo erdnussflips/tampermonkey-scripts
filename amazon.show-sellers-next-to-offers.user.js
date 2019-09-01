@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Amazon - Show sellers next to offers
-// @version      0.4
+// @version      0.5
 // @description  Displays information about the seller in the search list and more places
 // @author       erdnussflips
 // @icon         https://www.amazon.com/favicon.ico
@@ -324,10 +324,11 @@
 
     async function collectSellerInformation(sellerId) {
         try {
-            // let sellerUrlString = AMAZON_BASE_URL + "/sp?seller=" + sellerId
-            let sellerUrlString = AMAZON_NORMALIZED_BASE_URL + "/sp?seller=" + sellerId
+            let sellerUrlPath = "/sp?seller=" + sellerId
+            let sellerUrlString = AMAZON_BASE_URL + sellerUrlPath
+            let normalizedSellerUrlString = AMAZON_NORMALIZED_BASE_URL + sellerUrlPath
 
-            let request = await fetchArchivableUrl(sellerUrlString)
+            let request = await fetchArchivableUrl(normalizedSellerUrlString)
 
             let document = HTMLParser(request.response)
 
