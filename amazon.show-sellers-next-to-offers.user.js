@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Amazon - Show sellers next to offers
-// @version      0.3
+// @version      0.4
 // @description  Displays information about the seller in the search list and more places
 // @author       erdnussflips
 // @icon         https://www.amazon.com/favicon.ico
@@ -28,18 +28,32 @@
 
     // Features
     const FEATURE_ALWAYS_USE_ARCHIVE = false
-    const FEATURE_SHOW_SELLERS_IN_SEARCH = false
+    const FEATURE_SHOW_SELLERS_IN_SEARCH = true
     const FEATURE_SHOW_SELLERS_IN_OFFER = true
+    var FEATURE_SLEEP_RANDTOME_TIME_BEFORE_REQUEST_ARCHIVABLE_URL = false
 
     // Constants
     const AMAZON_BASE_URL = window.location.origin;
     const AMAZON_NORMALIZED_BASE_URL = AMAZON_BASE_URL.replace(/^https?:\/\/(?:www|smile)\.amazon\.(.*)$/gm, "https://www.amazon.$1")
     const ARCHIVE_OUTDATED_DAYS = 7
+    const FETCH_ARCHIVABLE_URL_SLEEP_MIN = 1
+    const FETCH_ARCHIVABLE_URL_SLEEP_MAX = 60
 
-    // Functions
+    // Extensions
+
     String.prototype.isEmpty = function() {
         return (this.length === 0 || !this.trim());
     };
+
+    Array.prototype.parallelAsyncForEach = function(callback) {
+        var promises = []
+        for (let index = 0; index < this.length; index++) {
+            promises[index] = callback(this[index], index, this)
+        }
+        return promises
+    };
+
+    // Functions
 
     function HTMLParser(htmlString){
         var document = window.document.implementation.createHTMLDocument();
@@ -49,6 +63,20 @@
 
     function JSONParser(jsonString) {
         return JSON.parse(jsonString);
+    }
+
+    function randomBetween(min, max) {
+        let difference = max - min + 1
+        return Math.floor(Math.random() * difference) + min
+    }
+
+    function sleep(milliseconds) {
+        console.debug("sleep for (ms):", milliseconds)
+        return new Promise(resolve => setTimeout(resolve, milliseconds))
+    }
+
+    function sleepForRandomSeconds(min, max) {
+        return sleep(randomBetween(min, max) * 1000)
     }
 
     function fetch(url, options = { method: "GET" }) {
@@ -186,39 +214,54 @@
             console.debug("Refresh archive for:", url)
             archiveUrl(url)
         })
-        promise.catch(error => {
+
+        try {
+            let fetchResult = await promise
+            // console.log(fetchResult)
+
+            let json = JSONParser(fetchResult.responseText)
+
+            if (json.archived_snapshots.closest && json.archived_snapshots.closest.available) {
+                return json.archived_snapshots.closest.url
+            }
+
+            return null
+        }
+        catch(error) {
             console.warn("Could not retrieve archive information => refresh archive for:", url, "error:", error)
             archiveUrl(url)
-        })
-
-        let fetchResult = await promise
-        // console.log(fetchResult)
-
-        let json = JSONParser(fetchResult.responseText)
-
-        if (json.archived_snapshots.closest && json.archived_snapshots.closest.available) {
-            return json.archived_snapshots.closest.url
         }
-
-        return null
     }
 
     async function fetchArchivableUrl(url) {
-        let promiseForArchivedUrl = loadWebarchivedUrl(url)
-
-        let promise = fetch(url)
-        let fetchResult = await promise
-
-        // Handle amazon ddos protection
-        if (fetchResult.status === 503 || FEATURE_ALWAYS_USE_ARCHIVE) {
-            console.warn("Amazon ddos protection occurred")
-            let archivedUrl = await promiseForArchivedUrl
-            if (archivedUrl) {
-                return fetch(archivedUrl)
+        try {
+            if (FEATURE_SLEEP_RANDTOME_TIME_BEFORE_REQUEST_ARCHIVABLE_URL) {
+                await sleepForRandomSeconds(FETCH_ARCHIVABLE_URL_SLEEP_MIN, FETCH_ARCHIVABLE_URL_SLEEP_MAX)
             }
-        }
 
-        return promise
+            let promiseForArchivedUrl = loadWebarchivedUrl(url)
+            let promiseOriginal = fetch(url)
+
+            let fetchResult = await promiseOriginal
+
+            // Handle amazon ddos protection
+            if (fetchResult.status === 503 || FEATURE_ALWAYS_USE_ARCHIVE) {
+                console.warn("Amazon ddos protection occurred")
+
+                try {
+                    let archivedUrl = await promiseForArchivedUrl
+                    return fetch(archivedUrl)
+                }
+                catch(error) {
+                    console.warn("Error while fetching web archive url:", error)
+                }
+            }
+
+            return promiseOriginal
+        }
+        catch(error) {
+            console.warn("Error while fetching archivable url:", error)
+        }
     }
 
     function collectOffers() {
@@ -238,9 +281,10 @@
         return offers
     }
 
-    function collectSellersForOffer(offerId) {
-        return fetch(AMAZON_BASE_URL + "/gp/offer-listing/" + offerId)
-        .then(function(request){
+    async function collectSellersForOffer(offerId) {
+        try {
+            let request = await fetch(AMAZON_BASE_URL + "/gp/offer-listing/" + offerId)
+
             let document = HTMLParser(request.response)
             let sellers = Bliss.$(".olpSellerName", document).map(function(item){
                 let seller = {
@@ -271,17 +315,20 @@
             })
 
             return sellers
-        })
-        .catch(function(error){
-            console.warn(error)
-        });
+        }
+        catch(error) {
+            console.warn("Could not collect sellers for offer:", offerId, "error:", error)
+            return null
+        }
     }
 
-    function collectSellerInformation(sellerId) {
-        // let sellerUrlString = AMAZON_BASE_URL + "/sp?seller=" + sellerId
-        let sellerUrlString = AMAZON_NORMALIZED_BASE_URL + "/sp?seller=" + sellerId
-        return fetchArchivableUrl(sellerUrlString)
-        .then(function(request){
+    async function collectSellerInformation(sellerId) {
+        try {
+            // let sellerUrlString = AMAZON_BASE_URL + "/sp?seller=" + sellerId
+            let sellerUrlString = AMAZON_NORMALIZED_BASE_URL + "/sp?seller=" + sellerId
+
+            let request = await fetchArchivableUrl(sellerUrlString)
+
             let document = HTMLParser(request.response)
 
             let sellerInformation = {
@@ -315,31 +362,30 @@
                         sellerInformation.sellerBusinessAddress = sellerBusinessAddress
                     }
                     catch (error) {
-                        console.warn("Could not collect seller address for:", sellerLogHint, error)
+                        console.warn("Could not collect seller address for:", sellerLogHint, "error:", error)
 
                         try {
                             let sellerAbout = Bliss.$("#about-seller", document)[0]
                             sellerInformation.sellerAbout = sellerAbout
                         }
                         catch(error) {
-                            console.warn("Could not collect seller sellerAbout for:", sellerLogHint, error)
+                            console.warn("Could not collect seller sellerAbout for:", sellerLogHint, "error:", error)
                         }
                     }
                 }
                 catch (error) {
-                    console.warn("Could not collect seller business information for:", sellerLogHint, error)
+                    console.warn("Could not collect seller business information for:", sellerLogHint, "error:", error)
                 }
 
                 return sellerInformation
             }
             catch(error) {
-                console.warn("Could not collect seller information for:", sellerId, error)
+                console.warn("Could not collect seller information for:", "error:", error)
             }
-
-        })
-        .catch(function(error){
-            console.warn("Request failed for: " + sellerId, error)
-        });
+        }
+        catch(error) {
+            console.warn("Request failed for:", sellerId, "error:", error)
+        }
     }
 
     function collectVatIdCheck(vatId) {
@@ -380,30 +426,35 @@
     }
 
     async function loadAllSellerInformationForOffer(offerId) {
-        let sellers = await collectSellersForOffer(offerId)
-        console.debug("Seller IDs for offer:", offerId, sellers)
+        try {
+            let sellers = await collectSellersForOffer(offerId)
+            console.debug("Seller IDs for offer:", offerId, "sellers:", sellers)
 
-        if (!sellers) {
-            console.warn("No sellers for:", offerId, sellers)
-            return null
-        }
-
-        let sellersInformation = await Promise.all(sellers.map(function(seller){
-            if (seller.sellerIsAmazon) {
-                // console.log("Seller is Amazon")
-                return {
-                    sellerId: seller.sellerNameOfAmazon,
-                    sellerName: seller.sellerNameOfAmazon,
-                    sellerBusinessName: seller.sellerNameOfAmazon,
-                    sellerUrl: new URL(AMAZON_BASE_URL)
-                }
+            if (!sellers) {
+                return null
             }
 
-            let sellerInformation = collectSellerInformation(seller.sellerId);
-            return sellerInformation
-        }))
+            let sellersInformation = await Promise.all(sellers.map(function(seller){
+                if (seller.sellerIsAmazon) {
+                    // console.log("Seller is Amazon")
+                    return {
+                        sellerId: seller.sellerNameOfAmazon,
+                        sellerName: seller.sellerNameOfAmazon,
+                        sellerBusinessName: seller.sellerNameOfAmazon,
+                        sellerUrl: new URL(AMAZON_BASE_URL)
+                    }
+                }
 
-        return sellersInformation
+                let promiseSellerInformation = collectSellerInformation(seller.sellerId);
+                return promiseSellerInformation
+            }))
+
+            return sellersInformation
+        }
+        catch(error) {
+            console.warn("Could not load all seller infromation for offer:", offerId, "error:", error)
+            return null
+        }
     }
 
     function extendSearchResults() {
@@ -414,18 +465,30 @@
 
         if (window.location.pathname !== "/s") return
 
+        FEATURE_SLEEP_RANDTOME_TIME_BEFORE_REQUEST_ARCHIVABLE_URL = true
+
         let offers = collectOffers()
-        offers.forEach(async function(offer){
+        let promises = offers.parallelAsyncForEach(async (offer) => {
             console.debug("Offer:", offer)
-            let sellersInformation = await loadAllSellerInformationForOffer(offer.asin)
 
-            if (!sellersInformation) {
-                console.warn("No sellers information for:", offer.asin, offer)
-                return
+            try {
+                let sellersInformation = await loadAllSellerInformationForOffer(offer.asin)
+
+                if (!sellersInformation) {
+                    console.warn("No sellers information for:", offer.asin, offer)
+                    return
+                }
+
+                let presentingContainer = Bliss.$(".a-price:first-of-type", offer.node)[0].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode
+                injectSellersInformation(presentingContainer, sellersInformation)
             }
+            catch(error) {
+                console.warn("Error while extending search results:", error)
+            }
+        })
 
-            let presentingContainer = Bliss.$(".a-price:first-of-type", offer.node)[0].parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode.parentNode
-            injectSellersInformation(presentingContainer, sellersInformation)
+        Promise.all(promises).then(() => {
+            console.info("Finished extending search results with sellers")
         })
     }
 
@@ -442,10 +505,17 @@
 
         let offerAsin = matches[1] || matches[2]
 
-        let sellers = await collectSellersForOffer(offerAsin)
+        try {
+            let sellers = await collectSellersForOffer(offerAsin)
             let sellersInformation = await loadAllSellerInformationForOffer(offerAsin)
             let presentingContainer = Bliss.$("#olp_feature_div", window.document)[0] || Bliss.$("#olpPocs_feature_div", window.document)[0]
             injectSellersInformation(presentingContainer, sellersInformation)
+        }
+        catch(error) {
+            console.log("Error while extending offer page:", error)
+        }
+
+        console.info("Finished extending offer page with sellers")
     }
 
     console.info("Hello from '"+ GM_info.script.name +"'")
