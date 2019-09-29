@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Amazon - Show sellers next to offers
-// @version      0.5
+// @version      0.6
 // @description  Displays information about the seller in the search list and more places
 // @author       erdnussflips
 // @icon         https://www.amazon.com/favicon.ico
@@ -234,33 +234,36 @@
     }
 
     async function fetchArchivableUrl(url) {
+        if (FEATURE_SLEEP_RANDTOME_TIME_BEFORE_REQUEST_ARCHIVABLE_URL) {
+            await sleepForRandomSeconds(FETCH_ARCHIVABLE_URL_SLEEP_MIN, FETCH_ARCHIVABLE_URL_SLEEP_MAX)
+        }
+
+        let promiseForArchivedUrl = loadWebarchivedUrl(url)
+        let promiseOriginal = fetch(url)
+
         try {
-            if (FEATURE_SLEEP_RANDTOME_TIME_BEFORE_REQUEST_ARCHIVABLE_URL) {
-                await sleepForRandomSeconds(FETCH_ARCHIVABLE_URL_SLEEP_MIN, FETCH_ARCHIVABLE_URL_SLEEP_MAX)
+            if (!FEATURE_ALWAYS_USE_ARCHIVE) {
+                await promiseOriginal
+                return promiseOriginal
             }
-
-            let promiseForArchivedUrl = loadWebarchivedUrl(url)
-            let promiseOriginal = fetch(url)
-
-            let fetchResult = await promiseOriginal
-
-            // Handle amazon ddos protection
-            if (fetchResult.status === 503 || FEATURE_ALWAYS_USE_ARCHIVE) {
-                console.warn("Amazon ddos protection occurred")
-
-                try {
-                    let archivedUrl = await promiseForArchivedUrl
-                    return fetch(archivedUrl)
-                }
-                catch(error) {
-                    console.warn("Error while fetching web archive url:", error)
-                }
-            }
-
-            return promiseOriginal
         }
         catch(error) {
-            console.warn("Error while fetching archivable url:", error)
+            // Handle amazon ddos protection
+            if (error.status !== 503) {
+                console.warn("Error while fetching archivable url:", error)
+                return promiseOriginal
+            }
+
+            console.warn("Amazon ddos protection occurred")
+        }
+
+        // Use webarchived url
+        try {
+            let archivedUrl = await promiseForArchivedUrl
+            return fetch(archivedUrl)
+        }
+        catch(error) {
+            console.warn("Error while fetching web archive url:", error)
         }
     }
 
